@@ -1,0 +1,36 @@
+{
+  "name": "chainsafe",
+  "version": "1.0.0",
+  "description": "A CLI tool to automatically add optional chaining to TypeScript and JavaScript files",
+  "main": "index.js",
+  "bin": {
+    "chainsafe": "./index.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "keywords": [
+    "typescript",
+    "javascript",
+    "optional-chaining",
+    "ast",
+    "transformation",
+    "cli",
+    "chainsafe"
+  ],
+  "author": "Dasari Uma Mahesh (Mahesh)",
+  "license": "MIT",
+  "dependencies": {
+    "@babel/parser": "^7.23.0",
+    "@babel/traverse": "^7.23.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dasariumamahesh/chainsafe.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dasariumamahesh/chainsafe/issues"
+  },
+  "homepage": "https://github.com/dasariumamahesh/chainsafe#readme"
+}

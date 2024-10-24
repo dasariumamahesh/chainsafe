@@ -1,0 +1,66 @@
+name: Publish to NPM
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: "Version type to publish (patch, minor, major)"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
+    permissions:
+      contents: write
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          # Remove token from here as we'll handle auth differently
+      
+      - name: Configure Git
+        run: |
+          git config --global user.email "um.dasari24@gmail.com"
+          git config --global user.name "dasariumamahesh"
+          git remote set-url origin https://${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git
+
+      - name: Verify repository access
+        run: |
+          git fetch origin master
+          if [ $? -ne 0 ]; then
+            echo "Error: Cannot access repository. Check PAT_TOKEN permissions."
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Install dependencies
+        run: |
+          echo "Installing dependencies..."
+          npm ci
+          if [ $? -ne 0 ]; then
+            echo "Error: Failed to install dependencies"
+            exit 1
+          fi
+
+      - name: Run publish script
+        run: |
+          echo "Publishing version type: ${{ github.event.inputs.version_type }}"
+          node scripts/publish.js ${{ github.event.inputs.version_type }} github
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
