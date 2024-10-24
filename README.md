@@ -1,9 +1,5 @@
 # chainsafe 🔗
 
-[![npm version](https://badge.fury.io/js/chainsafe.svg)](https://www.npmjs.com/package/chainsafe)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Downloads](https://img.shields.io/npm/dt/chainsafe.svg)](https://www.npmjs.com/package/chainsafe)
-
 A CLI tool to automatically add optional chaining to TypeScript and JavaScript files.
 
 ## Installation
