@@ -1,6 +1,6 @@
 # chainsafe 🔗
 
-A CLI tool to automatically add optional chaining to TypeScript and JavaScript files.
+A CLI tool to automatically add optional chaining to TypeScript and JavaScript files..
 
 ## Installation
 
