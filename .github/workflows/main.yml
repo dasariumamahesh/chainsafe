@@ -26,7 +26,6 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
-          # Remove token from here as we'll handle auth differently
       
       - name: Configure Git
         run: |

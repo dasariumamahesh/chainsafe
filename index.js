@@ -6,7 +6,7 @@ const parser = require('@babel/parser');
 const traverse = require('@babel/traverse').default;
 
 // Built-in JavaScript globals that should never be null
-const builtInGlobals = new Set([
+const defaultBuiltInGlobals = new Set([
   'Array',
   'Object',
   'String',
@@ -31,6 +31,9 @@ const builtInGlobals = new Set([
   'Buffer'
 ]);
 
+let builtInGlobals = new Set(defaultBuiltInGlobals);
+let applyOnlySet = new Set();
+
 // Help text
 const helpText = `
 Optional Chaining Transformer
@@ -52,13 +55,16 @@ Options:
   --no-skip <names>            Remove names from built-in globals skip list
   --skip-list                  Print current built-in globals list
   --preview                    Preview changes without writing to files
+  --skip-none                  Ignore built-in globals and apply optional chaining to everything
+  --skip-only <names>          Only skip the specified names, ignore built-in globals
+  --apply-only <names>         Only apply optional chaining to specified modules/variables
 
 Examples:
   npx chainsafe src/                     # Process all files in src directory
   npx chainsafe file.ts                  # Process single TypeScript file
-  npx chainsafe src/ --type ts           # Process only TypeScript files
-  npx chainsafe src/ --preview           # Preview changes without writing
-  npx chainsafe src/ --skip axios lodash # Skip additional globals
+  npx chainsafe src/ --skip-none         # Apply optional chaining to everything
+  npx chainsafe src/ --skip-only axios   # Only skip specified globals
+  npx chainsafe src/ --apply-only axios  # Only apply to specified modules
 `;
 
 // Options text
@@ -84,10 +90,16 @@ Global Variable Handling:
                         Example: --skip axios lodash moment
   --no-skip <names>      Remove specified names from built-in globals skip list
                         Example: --no-skip Array Object
+  --skip-none           Ignore built-in globals and apply optional chaining to everything
+  --skip-only <names>   Only skip the specified names, ignore built-in globals
+                        Example: --skip-only axios lodash
+  --apply-only <names>  Only apply optional chaining to specified modules/variables
+                        Example: --apply-only axios process
 
 All commands can be combined as needed. Examples:
   npx chainsafe src/ --type ts --preview
-  npx chainsafe src/ --skip axios --preview
+  npx chainsafe src/ --apply-only axios,lodash
+  npx chainsafe src/ --apply-only axios --preview
 `;
 
 function isValidFileType(entry, fileType) {
@@ -128,23 +140,52 @@ function processDirectory(directoryPath, fileType) {
   }
 }
 
-function processFile(filePath, isQuiet = false) {
+function processFile(filePath, isQuiet = false, maxIterations = 5) {
   try {
-    const code = fs.readFileSync(filePath, 'utf-8');
-    const transformedCode = addOptionalChaining(code);
+    let code = fs.readFileSync(filePath, 'utf-8');
+    let previousCode = '';
+    let iteration = 1;
+    let hasChanges = false;
+
+    while (iteration <= maxIterations && code !== previousCode) {
+      if (!isQuiet) {
+        console.log(`\n🔄 Running iteration ${iteration}/${maxIterations}`);
+      }
+
+      previousCode = code;
+      code = addOptionalChaining(code);
+
+      // Check if any changes were made in this iteration
+      if (code === previousCode) {
+        if (!isQuiet) {
+          console.log(`✨ No more changes needed after iteration ${iteration}`);
+        }
+        break;
+      }
+      hasChanges = true;
+      iteration++;
+    }
+
+    // Check if any changes were made across all iterations
+    if (!hasChanges) {
+      console.log(`\n⏭️  No changes required for: ${filePath}`);
+      return code;
+    }
 
     if (process.argv.includes('--preview')) {
       // Only preview the changes
       console.log(`📝 Preview changes for: ${filePath}`);
       console.log('=====================================');
-      console.log(transformedCode);
+      console.log(code);
       console.log('=====================================\n');
     } else {
       // Write changes by default
-      fs.writeFileSync(filePath, transformedCode);
-      console.log(`✅ Successfully updated: ${filePath}`);
+      fs.writeFileSync(filePath, code);
+      if (!isQuiet) {
+        console.log(`✅ Successfully updated: ${filePath} after ${iteration - 1} iterations`);
+      }
     }
-    return transformedCode;
+    return code;
   } catch (error) {
     console.error(`❌ Error processing ${filePath}:`, error.message);
     return null;
@@ -169,22 +210,18 @@ function addOptionalChaining(code) {
       enumTypes.add(path.node.id.name);
     },
 
-    // Track variables initialized from function calls or imports
     ImportDeclaration(path) {
       path.node.specifiers.forEach(specifier => {
         nonNullableVars.add(specifier.local.name);
       });
     },
 
-    // Track variables initialized from function calls or imports
     VariableDeclarator(path) {
       if (!path.node.init) {
         nullableVars.add(path.node.id.name);
       } else if (path.node.init.type === 'CallExpression' ||
         path.node.init.type === 'NewExpression' ||
         path.node.init.type === 'MemberExpression') {
-        // Variables initialized from function calls, constructors, or imported members
-        // are considered non-nullable
         nonNullableVars.add(path.node.id.name);
       } else if (path.node.init.type === 'ObjectExpression' ||
         nullableVars.has(path.node.init.name)) {
@@ -226,12 +263,31 @@ function addOptionalChaining(code) {
       // Skip this expressions
       if (path.node.object.type === 'ThisExpression') return;
 
-      // Skip if accessing a built-in global object
-      if (path.node.object.type === 'Identifier' && builtInGlobals.has(path.node.object.name)) {
-        return;
+      // Handle apply-only mode
+      if (applyOnlySet.size > 0) {
+        let shouldProcess = false;
+
+        // Check if the root object is in the apply-only set
+        let currentObject = path.node.object;
+        while (currentObject.type === 'MemberExpression') {
+          currentObject = currentObject.object;
+        }
+
+        if (currentObject.type === 'Identifier' && applyOnlySet.has(currentObject.name)) {
+          shouldProcess = true;
+        }
+
+        if (!shouldProcess) {
+          return;
+        }
+      } else {
+        // Regular skip logic when not in apply-only mode
+        if (!process.env.SKIP_NONE && path.node.object.type === 'Identifier' && builtInGlobals.has(path.node.object.name)) {
+          return;
+        }
       }
 
-      // Skip if the object is known to be non-nullable (initialized from function call or import)
+      // Skip if the object is known to be non-nullable
       if (path.node.object.type === 'Identifier' && nonNullableVars.has(path.node.object.name)) {
         return;
       }
@@ -367,6 +423,61 @@ if (require.main === module) {
     console.log('\n📋 Current built-in globals that will be skipped:');
     console.log(Array.from(builtInGlobals).sort().join('\n'));
     process.exit(0);
+  }
+
+  // Handle --skip-none flag
+  if (args.includes('--skip-none')) {
+    console.log('🔧 Ignoring built-in globals and applying optional chaining to everything');
+    process.env.SKIP_NONE = 'true';
+    builtInGlobals.clear();
+  }
+
+  // Handle --apply-only flag
+  const applyOnlyIndex = args.indexOf('--apply-only');
+  if (applyOnlyIndex !== -1) {
+    const applyOnlyItems = [];
+    for (let i = applyOnlyIndex + 1; i < args.length; i++) {
+      if (args[i].startsWith('--')) break;
+      applyOnlyItems.push(args[i]);
+    }
+
+    if (!validateGlobals(applyOnlyItems)) {
+      console.error('❌ Invalid identifiers provided. Names must be valid JavaScript identifiers.');
+      console.error('Example: npx chainsafe src/ --apply-only axios process');
+      process.exit(1);
+    }
+    console.log('Only applying optional chaining to:', applyOnlyItems.join(', '));
+    applyOnlySet = new Set(applyOnlyItems);
+  }
+
+  // Handle --skip-only flag
+  const skipOnlyIndex = args.indexOf('--skip-only');
+  if (skipOnlyIndex !== -1) {
+    const skipOnlyItems = [];
+    for (let i = skipOnlyIndex + 1; i < args.length; i++) {
+      if (args[i].startsWith('--')) break;
+      skipOnlyItems.push(args[i]);
+    }
+
+    if (!validateGlobals(skipOnlyItems)) {
+      console.error('❌ Invalid globals provided. Globals must be valid JavaScript identifiers.');
+      console.error('Example: npx chainsafe src/ --skip-only axios lodash');
+      process.exit(1);
+    }
+    console.log('Using only these globals to skip:', skipOnlyItems.join(', '));
+    builtInGlobals = new Set(skipOnlyItems);
+  }
+
+  // Make skip-only and apply-only mutually exclusive
+  if (args.includes('--skip-only') && args.includes('--apply-only')) {
+    console.error('❌ Error: --skip-only and --apply-only cannot be used together');
+    process.exit(1);
+  }
+
+  // Make skip-none and apply-only mutually exclusive
+  if (args.includes('--skip-none') && args.includes('--apply-only')) {
+    console.error('❌ Error: --skip-none and --apply-only cannot be used together');
+    process.exit(1);
   }
 
   const inputPath = args[0];
