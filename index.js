@@ -369,7 +369,22 @@ function addOptionalChaining(code) {
 
       // Handle computed properties
       if (path.node.computed) {
-        // Don't add optional chaining for array-style access
+        // Don't skip - instead check if we should add optional chaining
+        let shouldAdd = false;
+        let rootObject = path.node;
+        while (rootObject.object && rootObject.object.type === 'MemberExpression') {
+          rootObject = rootObject.object;
+        }
+
+        if (rootObject.object && rootObject.object.type === 'Identifier') {
+          shouldAdd = nullableVars.has(rootObject.object.name) ||
+            nullableProps.has(rootObject.object.name);
+        }
+
+        // Add optional chaining before the computed property access
+        if (shouldAdd) {
+          insertPositions.add(path.node.property.start - 1);
+        }
         return;
       } else {
         // Regular property access with dot notation
