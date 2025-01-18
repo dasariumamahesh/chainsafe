@@ -1,163 +1,336 @@
 #!/usr/bin/env node
 
-const fs = require('fs');
+const fs = require('fs').promises;
 const path = require('path');
 const parser = require('@babel/parser');
 const traverse = require('@babel/traverse').default;
 
-// Built-in JavaScript globals that should never be null
-const defaultBuiltInGlobals = new Set([
-  'Array',
-  'Object',
-  'String',
-  'Number',
-  'Boolean',
-  'Date',
-  'Math',
-  'JSON',
-  'RegExp',
-  'Error',
-  'Map',
-  'Set',
-  'WeakMap',
-  'WeakSet',
-  'Promise',
-  'Proxy',
-  'Reflect',
-  'BigInt',
-  'Symbol',
-  'Function',
-  'console',
-  'Buffer'
-]);
+// Configuration
+const DEFAULT_CONFIG = {
+  maxIterations: 5,
+  maxFileSize: 10 * 1024 * 1024, // 10MB
+  supportedExtensions: ['.js', '.jsx', '.ts', '.tsx'],
+  ignoreDirectories: ['node_modules', '.git', 'dist', 'build'],
+  ignoreFiles: ['.d.ts'],
+  builtInGlobals: new Set([
+    'Array', 'Object', 'String', 'Number', 'Boolean',
+    'Date', 'Math', 'JSON', 'RegExp', 'Error',
+    'Map', 'Set', 'WeakMap', 'WeakSet', 'Symbol',
+    'Promise', 'Proxy', 'Reflect', 'BigInt',
+    'Function', 'console', 'Buffer', 'process'
+  ])
+};
 
-let builtInGlobals = new Set(defaultBuiltInGlobals);
-let applyOnlySet = new Set();
-
-// Help text
-const helpText = `
+const HELP_TEXT = `
 Optional Chaining Transformer
-===========================
+=============================
 
 A tool to automatically add optional chaining operators to JavaScript/TypeScript code.
 
 Usage: 
-  npx chainsafe <path> [options]
-
-Arguments:
-  path                     File or directory path to process
+  chainsafe <path> [options]
 
 Options:
-  --help, -h                   Show this help message
-  --options, -o               Show all available commands and their descriptions
-  --type ts|js                 Process only TypeScript or JavaScript files
-  --skip <names>               Add names to built-in globals to be skipped
-  --no-skip <names>            Remove names from built-in globals skip list
-  --skip-list                  Print current built-in globals list
-  --preview                    Preview changes without writing to files
-  --skip-none                  Ignore built-in globals and apply optional chaining to everything
-  --skip-only <names>          Only skip the specified names, ignore built-in globals
-  --apply-only <names>         Only apply optional chaining to specified modules/variables
+  --preview              Show changes without writing to files
+  --help                Show this help message
+  --skip <names>        Add names to skip list (comma-separated)
+  --no-skip <names>     Remove names from skip list (comma-separated)
+  --skip-list           Show current skip list
+  --skip-none           Don't skip any globals
+  --skip-only <names>   Only skip specified names
+  --apply-only <names>  Only apply to specified names
+  --type ts|js          Process only TypeScript or JavaScript files
 
 Examples:
-  npx chainsafe src/                     # Process all files in src directory
-  npx chainsafe file.ts                  # Process single TypeScript file
-  npx chainsafe src/ --skip-none         # Apply optional chaining to everything
-  npx chainsafe src/ --skip-only axios   # Only skip specified globals
-  npx chainsafe src/ --apply-only axios  # Only apply to specified modules
-`;
+  chainsafe src/
+  chainsafe file.js --preview
+  chainsafe src/ --skip axios,lodash
+  chainsafe src/ --apply-only axios`;
 
-// Options text
-const optionsText = `
-Available Commands
-================
-
-Core Commands:
-  <path>                      Process file or directory at specified path
-  --help, -h                  Show help information
-  --options, -o              Show this list of available commands
-
-File Type Filtering:
-  --type ts              Process only TypeScript (.ts, .tsx) files
-  --type js              Process only JavaScript (.js, .jsx) files
-
-Preview and Testing:
-  --preview              Show transformed code without writing to files
-  
-Global Variable Handling:
-  --skip-list            Display current list of built-in globals being skipped
-  --skip <names>         Add specified names to built-in globals skip list
-                        Example: --skip axios lodash moment
-  --no-skip <names>      Remove specified names from built-in globals skip list
-                        Example: --no-skip Array Object
-  --skip-none           Ignore built-in globals and apply optional chaining to everything
-  --skip-only <names>   Only skip the specified names, ignore built-in globals
-                        Example: --skip-only axios lodash
-  --apply-only <names>  Only apply optional chaining to specified modules/variables
-                        Example: --apply-only axios process
-
-All commands can be combined as needed. Examples:
-  npx chainsafe src/ --type ts --preview
-  npx chainsafe src/ --apply-only axios,lodash
-  npx chainsafe src/ --apply-only axios --preview
-`;
-
-function isValidFileType(entry, fileType) {
-  if (!fileType) {
-    return entry.endsWith('.ts') || entry.endsWith('.tsx') || entry.endsWith('.js') || entry.endsWith('.jsx');
+class State {
+  constructor(config = DEFAULT_CONFIG) {
+    this.builtInGlobals = new Set(config.builtInGlobals);
+    this.applyOnlySet = new Set();
+    this.skipOnlySet = new Set();
+    this.config = config;
+    this.stats = {
+      filesProcessed: 0,
+      filesModified: 0,
+      errors: 0,
+      warnings: 0,
+      startTime: Date.now()
+    };
   }
-  switch (fileType.toLowerCase()) {
-    case 'ts':
-      return entry.endsWith('.ts') || entry.endsWith('.tsx');
-    case 'js':
-      return entry.endsWith('.js') || entry.endsWith('.jsx');
-    default:
-      console.error('Invalid file type specified. Use --type ts or --type js');
-      process.exit(1);
-  }
-}
 
-function processDirectory(directoryPath, fileType) {
-  console.log(`\n📁 Processing directory: ${directoryPath}`);
-  const entries = fs.readdirSync(directoryPath);
-  const fileCount = entries.filter(entry => isValidFileType(entry, fileType)).length;
-
-  console.log(`Found ${fileCount} ${fileType ? fileType.toUpperCase() : 'TypeScript/JavaScript'} files`);
-
-  for (const entry of entries) {
-    const fullPath = path.join(directoryPath, entry);
-    const stats = fs.statSync(fullPath);
-
-    if (stats.isDirectory()) {
-      // Skip node_modules and hidden directories
-      if (entry !== 'node_modules' && !entry.startsWith('.')) {
-        processDirectory(fullPath, fileType);
-      }
-    } else if (isValidFileType(entry, fileType)) {
-      console.log(`\n📄 Processing file: ${fullPath}`);
-      processFile(fullPath, true);
+  shouldSkip(name) {
+    if (!name) return false;
+    if (this.applyOnlySet.size > 0) {
+      return !this.applyOnlySet.has(name);
     }
+    if (this.skipOnlySet.size > 0) {
+      return this.skipOnlySet.has(name);
+    }
+    return this.builtInGlobals.has(name);
+  }
+
+  getExecutionTime() {
+    return ((Date.now() - this.stats.startTime) / 1000).toFixed(2);
+  }
+
+  addWarning() {
+    this.stats.warnings++;
   }
 }
 
-function processFile(filePath, isQuiet = false, maxIterations = 5) {
+async function isBinaryFile(buffer) {
+  const sample = buffer.slice(0, 4096);
+  return sample.some(byte => byte === 0);
+}
+
+const getPlugins = (isTypeScript) => [
+  ...(isTypeScript ? ['typescript'] : []), // TypeScript plugin first if needed
+  'jsx',
+  ['optionalChainingAssign', { version: '2023-07' }],
+  'classProperties',
+  'classPrivateProperties',
+  'classPrivateMethods',
+  'exportDefaultFrom',
+  'dynamicImport',
+  'objectRestSpread',
+  ['decorators', { decoratorsBeforeExport: true }]
+];
+
+function validatePath(ast, filePath, state) {
+  // Check for mixed imports/requires
+  let hasImport = false;
+  let hasRequire = false;
+
+  traverse(ast, {
+    ImportDeclaration() { hasImport = true; },
+    CallExpression(path) {
+      if (path.node.callee.name === 'require') {
+        hasRequire = true;
+      }
+    }
+  });
+
+  if (hasImport && hasRequire) {
+    console.warn(`⚠️ Warning: Mixed imports/requires in ${filePath}`);
+    state.addWarning();
+  }
+}
+
+async function addOptionalChaining(code, filePath, state) {
+  const isTypeScript = filePath.toLowerCase().endsWith('.ts') || filePath.toLowerCase().endsWith('.tsx');
+
+  const ast = parser.parse(code, {
+    sourceType: 'module',
+    plugins: getPlugins(isTypeScript),
+    tokens: true,
+    allowImportExportEverywhere: true,
+    errorRecovery: true
+  });
+
+  validatePath(ast, filePath, state);
+
+  const insertPositions = new Set();
+
+  traverse(ast, {
+    MemberExpression(path) {
+      try {
+        // Skip if already optional or no object
+        if (path.node.optional || !path.node.object) return;
+
+        // Handle identifiers first
+        if (path.node.object.type === 'Identifier') {
+          const name = path.node.object.name;
+
+          // Direct checks first (process, builtins, skip list)
+          if (name === 'process' || state.shouldSkip(name)) {
+            return;
+          }
+
+          const binding = path.scope.getBinding(name);
+
+          // Binding checks
+          if (binding) {
+            // Skip catch clause error parameters
+            if (binding.path?.parentPath?.node?.type === 'CatchClause') return;
+
+            // Skip imported bindings
+            if (binding.path?.isImportSpecifier() ||
+              binding.path?.isImportDefaultSpecifier() ||
+              binding.path?.isImportNamespaceSpecifier()) {
+              return;
+            }
+
+            // Skip enum access
+            if (binding.path?.parent?.type === 'TSEnumDeclaration' ||
+              binding.path?.parent?.type === 'EnumDeclaration') {
+              return;
+            }
+
+            // Skip constants and literals
+            if (binding.constant && binding.path?.node?.init) {
+              const init = binding.path.node.init;
+              if (['StringLiteral', 'NumericLiteral', 'BooleanLiteral',
+                'ObjectExpression', 'ArrayExpression'].includes(init.type)) {
+                return;
+              }
+            }
+
+            // Skip if the binding name is in skip list
+            if (state.shouldSkip(binding.path?.node?.name)) {
+              return;
+            }
+          }
+        }
+
+        // Check parent chain
+        let currentPath = path;
+        let skipChaining = false;
+
+        while (currentPath?.parentPath) {
+          const parentNode = currentPath.parentPath.node;
+          if (!parentNode) break;
+
+          // Skip type-related constructs
+          if (['TSTypeReference', 'TSQualifiedName', 'TSModuleDeclaration',
+            'TSNamespaceExportDeclaration'].includes(parentNode.type)) {
+            skipChaining = true;
+            break;
+          }
+
+          // Skip catch blocks
+          if (parentNode.type === 'CatchClause') {
+            skipChaining = true;
+            break;
+          }
+
+          // Skip assignments and updates
+          if ((parentNode.type === 'AssignmentExpression' && parentNode.left === currentPath.node) ||
+            (parentNode.type === 'CallExpression' && currentPath.node === parentNode.callee) ||
+            parentNode.type === 'UpdateExpression') {
+            skipChaining = true;
+            break;
+          }
+
+          // Skip destructuring and class members
+          if (parentNode.type === 'ObjectPattern' ||
+            ['ClassProperty', 'ClassPrivateProperty', 'ClassMethod',
+              'ClassPrivateMethod'].includes(parentNode.type)) {
+            skipChaining = true;
+            break;
+          }
+
+          currentPath = currentPath.parentPath;
+        }
+
+        if (skipChaining) return;
+
+        // Skip process.env access
+        if (path.node.object.type === 'MemberExpression' &&
+          path.node.object.object?.name === 'process' &&
+          path.node.object.property?.name === 'env') {
+          return;
+        }
+
+        // Handle 'this' expressions in class methods
+        if (path.node.object.type === 'ThisExpression') {
+          if (path.findParent(p => ['ClassMethod', 'ClassProperty',
+            'ClassPrivateProperty', 'ClassPrivateMethod']
+            .includes(p.node.type))) {
+            return;
+          }
+        }
+
+        // Check enum access in member expressions
+        let rootObject = path.node.object;
+        let isEnumAccess = false;
+
+        while (rootObject?.type === 'MemberExpression') {
+          if (rootObject.object?.type === 'Identifier') {
+            const binding = path.scope.getBinding(rootObject.object.name);
+            if (binding?.path?.parent?.type === 'TSEnumDeclaration' ||
+              binding?.path?.parent?.type === 'EnumDeclaration') {
+              isEnumAccess = true;
+              break;
+            }
+          }
+          rootObject = rootObject.object;
+        }
+
+        if (isEnumAccess) return;
+
+        // Add position for optional chaining
+        if (path.node.property?.start !== undefined) {
+          insertPositions.add(path.node.property.start - 1);
+        }
+
+      } catch (error) {
+        error.phase = 'traverse';
+        error.expression = path.node?.type;
+        error.location = {
+          start: path.node?.start,
+          end: path.node?.end
+        };
+        throw error;
+      }
+    }
+  });
+
+  // Apply transformations
+  const positions = Array.from(insertPositions).sort((a, b) => b - a);
+  let result = code;
+
+  for (const pos of positions) {
+    result = result.slice(0, pos) +
+      (result.slice(pos, pos + 1) !== '.' ? '?.' : '?') +
+      result.slice(pos);
+  }
+
+  return {
+    code: result,
+    hasChanges: positions.length > 0
+  };
+}
+
+async function processFile(filePath, options = {}, state) {
   try {
-    let code = fs.readFileSync(filePath, 'utf-8');
+    const stats = await fs.stat(filePath);
+    if (stats.size > state.config.maxFileSize) {
+      throw new Error(`File too large (>${state.config.maxFileSize / 1024 / 1024}MB)`);
+    }
+
+    if (options.fileType) {
+      const isTypeScript = filePath.toLowerCase().endsWith('.ts') || filePath.toLowerCase().endsWith('.tsx');
+      if ((options.fileType === 'ts' && !isTypeScript) || (options.fileType === 'js' && isTypeScript)) {
+        return;
+      }
+    }
+
+    console.log(`Processing: ${filePath}`);
+    const buffer = await fs.readFile(filePath);
+
+    if (await isBinaryFile(buffer)) {
+      console.log('Skipping binary file');
+      return;
+    }
+
+    let code = buffer.toString('utf-8');
+    const cleanCode = code.replace(/^\uFEFF|\uFFFE|\uEFBBBF/, '');
     let previousCode = '';
     let iteration = 1;
     let hasChanges = false;
+    code = cleanCode;
 
-    while (iteration <= maxIterations && code !== previousCode) {
-      if (!isQuiet) {
-        console.log(`\n🔄 Running iteration ${iteration}/${maxIterations}`);
-      }
-
+    while (iteration <= state.config.maxIterations && code !== previousCode) {
       previousCode = code;
-      code = addOptionalChaining(code);
+      const result = await addOptionalChaining(code, filePath, state);
+      code = result.code;
 
-      // Check if any changes were made in this iteration
       if (code === previousCode) {
-        if (!isQuiet) {
+        if (iteration > 1) {
           console.log(`✨ No more changes needed after iteration ${iteration}`);
         }
         break;
@@ -166,400 +339,170 @@ function processFile(filePath, isQuiet = false, maxIterations = 5) {
       iteration++;
     }
 
-    // Check if any changes were made across all iterations
     if (!hasChanges) {
-      console.log(`\n⏭️  No changes required for: ${filePath}`);
-      return code;
+      console.log('No changes needed');
+      return;
     }
 
-    if (process.argv.includes('--preview')) {
-      // Only preview the changes
-      console.log(`📝 Preview changes for: ${filePath}`);
-      console.log('=====================================');
+    if (options.preview) {
+      console.log('\nTransformed code:');
       console.log(code);
-      console.log('=====================================\n');
     } else {
-      // Write changes by default
-      fs.writeFileSync(filePath, code);
-      if (!isQuiet) {
-        console.log(`✅ Successfully updated: ${filePath} after ${iteration - 1} iterations`);
-      }
+      await fs.writeFile(filePath, code);
+      console.log('✅ File transformed successfully');
+      state.stats.filesModified++;
     }
-    return code;
+
+    state.stats.filesProcessed++;
   } catch (error) {
-    console.error(`❌ Error processing ${filePath}:`, error.message);
-    return null;
+    state.stats.errors++;
+    error.filePath = filePath;
+    throw error;
   }
 }
 
-function addOptionalChaining(code) {
-  const ast = parser.parse(code, {
-    sourceType: 'module',
-    plugins: ['typescript', 'jsx']
-  });
+const seen = new Set();
+async function processDirectory(dirPath, options = {}, state) {
+  const realPath = await fs.realpath(dirPath);
+  if (seen.has(realPath)) return;
+  seen.add(realPath);
 
-  const nullableVars = new Set();
-  const nullableProps = new Set();
-  const enumTypes = new Set();
-  const insertPositions = new Set();
-  const nonNullableVars = new Set();
+  const entries = await fs.readdir(dirPath);
 
-  traverse(ast, {
-    // Track enum declarations
-    TSEnumDeclaration(path) {
-      enumTypes.add(path.node.id.name);
-    },
+  for (const entry of entries) {
+    const fullPath = path.normalize(path.join(dirPath, entry));
+    const stats = await fs.lstat(fullPath);
 
-    ImportDeclaration(path) {
-      path.node.specifiers.forEach(specifier => {
-        nonNullableVars.add(specifier.local.name);
-      });
-    },
+    if (stats.isSymbolicLink()) continue;
 
-    VariableDeclarator(path) {
-      if (!path.node.init) {
-        nullableVars.add(path.node.id.name);
-      } else if (path.node.init.type === 'CallExpression' ||
-        path.node.init.type === 'NewExpression' ||
-        path.node.init.type === 'MemberExpression') {
-        nonNullableVars.add(path.node.id.name);
-      } else if (path.node.init.type === 'ObjectExpression' ||
-        nullableVars.has(path.node.init.name)) {
-        nullableProps.add(path.node.id.name);
-      }
-    },
-
-    Function(path) {
-      path.node.params.forEach(param => {
-        if (param.type === 'Identifier') {
-          nullableVars.add(param.name);
-        }
-      });
-    },
-
-    ArrowFunctionExpression(path) {
-      path.node.params.forEach(param => {
-        if (param.type === 'Identifier') {
-          nullableVars.add(param.name);
-        }
-      });
-    },
-
-    AssignmentExpression(path) {
-      if (path.node.right.type === 'Identifier' && nullableVars.has(path.node.right.name)) {
-        if (path.node.left.type === 'MemberExpression') {
-          nullableProps.add(path.node.left.object.name);
-        }
-      }
-    },
-
-    MemberExpression(path) {
-      // Skip if already optional
-      if (path.node.optional) return;
-
-      // Skip if part of another member expression as property
-      if (path.parent.type === 'MemberExpression' && path.parent.property === path.node) return;
-
-      // Skip this expressions
-      if (path.node.object.type === 'ThisExpression') return;
-
-      // Handle apply-only mode
-      if (applyOnlySet.size > 0) {
-        let shouldProcess = false;
-
-        // Check if the root object is in the apply-only set
-        let currentObject = path.node.object;
-        while (currentObject.type === 'MemberExpression') {
-          currentObject = currentObject.object;
-        }
-
-        if (currentObject.type === 'Identifier' && applyOnlySet.has(currentObject.name)) {
-          shouldProcess = true;
-        }
-
-        if (!shouldProcess) {
-          return;
-        }
-      } else {
-        // Regular skip logic when not in apply-only mode
-        if (!process.env.SKIP_NONE && path.node.object.type === 'Identifier' && builtInGlobals.has(path.node.object.name)) {
-          return;
-        }
-      }
-
-      // Skip if the object is known to be non-nullable
-      if (path.node.object.type === 'Identifier' && nonNullableVars.has(path.node.object.name)) {
-        return;
-      }
-
-      // Skip if accessing a property on a built-in global
-      let isBuiltInChain = false;
-      let currentObject = path.node.object;
-      while (currentObject.type === 'MemberExpression') {
-        if (currentObject.object.type === 'Identifier' && builtInGlobals.has(currentObject.object.name)) {
-          isBuiltInChain = true;
-          break;
-        }
-        currentObject = currentObject.object;
-      }
-      if (isBuiltInChain) return;
-
-      // Check if this is part of a constructor call
-      let isConstructorCall = false;
-      try {
-        let currentPath = path;
-        while (currentPath && currentPath.parentPath) {
-          if (currentPath.parentPath.node.type === 'NewExpression') {
-            isConstructorCall = true;
-            break;
-          }
-          currentPath = currentPath.parentPath;
-        }
-      } catch (e) {
-        console.error('Error checking constructor context:', e);
-      }
-
-      if (isConstructorCall) return;
-
-      // Check if this is part of an assignment target
-      let isAssignmentTarget = false;
-      try {
-        let currentPath = path;
-        while (currentPath && currentPath.parentPath) {
-          if (currentPath.parentPath.node.type === 'AssignmentExpression' &&
-            currentPath.parentPath.node.left === currentPath.node) {
-            isAssignmentTarget = true;
-            break;
-          }
-          if (currentPath.parentPath.node.type === 'UpdateExpression') {
-            isAssignmentTarget = true;
-            break;
-          }
-          currentPath = currentPath.parentPath;
-        }
-      } catch (e) {
-        console.error('Error checking assignment context:', e);
-      }
-
-      if (isAssignmentTarget) return;
-
-      let shouldAdd = false;
-
-      // Find the root object
-      let rootObject = path.node;
-      while (rootObject.object && rootObject.object.type === 'MemberExpression') {
-        rootObject = rootObject.object;
-      }
-
-      // Check if accessing an enum or nullable variable/property
-      if (rootObject.object && rootObject.object.type === 'Identifier') {
-        if (enumTypes.has(rootObject.object.name)) {
-          shouldAdd = true;
-        } else {
-          shouldAdd = nullableVars.has(rootObject.object.name) ||
-            nullableProps.has(rootObject.object.name);
-        }
-      }
-
-      // Always consider callback parameters as potentially nullable
-      if (path.node.object.type === 'Identifier' &&
-        path.findParent(p => p.isArrowFunctionExpression() || p.isFunctionExpression())) {
-        shouldAdd = true;
-      }
-
-      // Handle computed properties
-      if (path.node.computed) {
-        // Don't skip - instead check if we should add optional chaining
-        let shouldAdd = false;
-        let rootObject = path.node;
-        while (rootObject.object && rootObject.object.type === 'MemberExpression') {
-          rootObject = rootObject.object;
-        }
-
-        if (rootObject.object && rootObject.object.type === 'Identifier') {
-          shouldAdd = nullableVars.has(rootObject.object.name) ||
-            nullableProps.has(rootObject.object.name);
-        }
-
-        // Add optional chaining before the computed property access
-        if (shouldAdd) {
-          insertPositions.add(path.node.property.start - 1);
-        }
-        return;
-      } else {
-        // Regular property access with dot notation
-        if (shouldAdd || path.node.object.type === 'MemberExpression' ||
-          (path.node.object.type === 'Identifier' && path.scope.hasBinding(path.node.object.name) &&
-            !nonNullableVars.has(path.node.object.name))) {
-          insertPositions.add(path.node.property.start - 1);
-        }
-      }
+    if (stats.isDirectory() && !state.config.ignoreDirectories.includes(entry) && !entry.startsWith('.')) {
+      await processDirectory(fullPath, options, state);
+    } else if (state.config.supportedExtensions.includes(path.extname(fullPath).toLowerCase()) &&
+      !state.config.ignoreFiles.includes(path.basename(fullPath))) {
+      await processFile(fullPath, options, state);
     }
-  });
-
-  const sortedPositions = Array.from(insertPositions).sort((a, b) => b - a);
-
-  let result = code;
-  for (const pos of sortedPositions) {
-    result = result.slice(0, pos) + (result.slice(pos, pos + 1) !== '.' ? '?.' : '?') + result.slice(pos);
   }
-
-  return result;
 }
 
-function validateGlobals(globals) {
-  if (!Array.isArray(globals)) return false;
-  return globals.every(global => typeof global === 'string' && global.match(/^[a-zA-Z_$][a-zA-Z0-9_$]*$/));
+function parseNames(input) {
+  return input ? input.split(',').map(name => name.trim()).filter(Boolean) : [];
 }
 
-// CLI interface
-if (require.main === module) {
+function validateNames(names) {
+  return names.every(name => /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(name));
+}
+
+function parseOption(args, flag, errorMsg) {
+  const index = args.indexOf(flag);
+  if (index !== -1 && args[index + 1]) {
+    const names = parseNames(args[index + 1]);
+    if (!validateNames(names)) {
+      console.error(errorMsg);
+      process.exit(1);
+    }
+    return names;
+  }
+  return null;
+}
+
+async function main() {
   const args = process.argv.slice(2);
 
-  // Show help text
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log(helpText);
-    process.exit(0);
+  if (args.length === 0 || args.includes('--help')) {
+    console.log(HELP_TEXT);
+    return;
   }
 
-  // Show options text
-  if (args.includes('--options') || args.includes('-o')) {
-    console.log(optionsText);
-    process.exit(0);
-  }
+  const state = new State();
 
-  if (args.length === 0) {
-    console.log(helpText);
-    process.exit(1);
-  }
-
-  // Handle --skip-list flag
   if (args.includes('--skip-list')) {
-    console.log('\n📋 Current built-in globals that will be skipped:');
-    console.log(Array.from(builtInGlobals).sort().join('\n'));
-    process.exit(0);
+    console.log('\nCurrent skip list:');
+    console.log(Array.from(state.builtInGlobals).sort().join('\n'));
+    return;
   }
 
-  // Handle --skip-none flag
   if (args.includes('--skip-none')) {
-    console.log('🔧 Ignoring built-in globals and applying optional chaining to everything');
-    process.env.SKIP_NONE = 'true';
-    builtInGlobals.clear();
+    console.log('🔧 Disabling all skips');
+    state.builtInGlobals.clear();
   }
 
-  // Handle --apply-only flag
-  const applyOnlyIndex = args.indexOf('--apply-only');
-  if (applyOnlyIndex !== -1) {
-    const applyOnlyItems = [];
-    for (let i = applyOnlyIndex + 1; i < args.length; i++) {
-      if (args[i].startsWith('--')) break;
-      applyOnlyItems.push(args[i]);
-    }
-
-    if (!validateGlobals(applyOnlyItems)) {
-      console.error('❌ Invalid identifiers provided. Names must be valid JavaScript identifiers.');
-      console.error('Example: npx chainsafe src/ --apply-only axios process');
-      process.exit(1);
-    }
-    console.log('Only applying optional chaining to:', applyOnlyItems.join(', '));
-    applyOnlySet = new Set(applyOnlyItems);
+  // Parse options
+  const skipNames = parseOption(args, '--skip', '❌ Invalid names provided for --skip');
+  if (skipNames) {
+    skipNames.forEach(name => state.builtInGlobals.add(name));
   }
 
-  // Handle --skip-only flag
-  const skipOnlyIndex = args.indexOf('--skip-only');
-  if (skipOnlyIndex !== -1) {
-    const skipOnlyItems = [];
-    for (let i = skipOnlyIndex + 1; i < args.length; i++) {
-      if (args[i].startsWith('--')) break;
-      skipOnlyItems.push(args[i]);
-    }
-
-    if (!validateGlobals(skipOnlyItems)) {
-      console.error('❌ Invalid globals provided. Globals must be valid JavaScript identifiers.');
-      console.error('Example: npx chainsafe src/ --skip-only axios lodash');
-      process.exit(1);
-    }
-    console.log('Using only these globals to skip:', skipOnlyItems.join(', '));
-    builtInGlobals = new Set(skipOnlyItems);
+  const noSkipNames = parseOption(args, '--no-skip', '❌ Invalid names provided for --no-skip');
+  if (noSkipNames) {
+    noSkipNames.forEach(name => state.builtInGlobals.delete(name));
   }
 
-  // Make skip-only and apply-only mutually exclusive
-  if (args.includes('--skip-only') && args.includes('--apply-only')) {
+  const skipOnlyNames = parseOption(args, '--skip-only', '❌ Invalid names provided for --skip-only');
+  if (skipOnlyNames) {
+    state.skipOnlySet = new Set(skipOnlyNames);
+    state.builtInGlobals.clear();
+  }
+
+  const applyOnlyNames = parseOption(args, '--apply-only', '❌ Invalid names provided for --apply-only');
+  if (applyOnlyNames) {
+    state.applyOnlySet = new Set(applyOnlyNames);
+  }
+
+  if (state.skipOnlySet.size > 0 && state.applyOnlySet.size > 0) {
     console.error('❌ Error: --skip-only and --apply-only cannot be used together');
     process.exit(1);
   }
 
-  // Make skip-none and apply-only mutually exclusive
-  if (args.includes('--skip-none') && args.includes('--apply-only')) {
-    console.error('❌ Error: --skip-none and --apply-only cannot be used together');
+  const typeIndex = args.indexOf('--type');
+  const fileType = typeIndex !== -1 ? args[typeIndex + 1] : null;
+
+  if (fileType && !['ts', 'js'].includes(fileType)) {
+    console.error('❌ Invalid file type. Use --type ts or --type js');
     process.exit(1);
   }
 
   const inputPath = args[0];
-
-  // Get file type if specified
-  const typeIndex = args.indexOf('--type');
-  const fileType = typeIndex !== -1 ? args[typeIndex + 1] : null;
-
-  // Handle --no-skip flag
-  const noSkipIndex = args.indexOf('--no-skip');
-  if (noSkipIndex !== -1) {
-    const noSkipItems = [];
-    for (let i = noSkipIndex + 1; i < args.length; i++) {
-      if (args[i].startsWith('--')) break;
-      noSkipItems.push(args[i]);
-    }
-
-    if (!validateGlobals(noSkipItems)) {
-      console.error('❌ Invalid globals provided. Globals must be valid JavaScript identifiers.');
-      console.error('Example: npx chainsafe src/ --no-skip Array Object');
-      process.exit(1);
-    }
-    console.log('Removing globals from skip list:', noSkipItems.join(', '));
-    noSkipItems.forEach(global => builtInGlobals.delete(global));
-  }
-
-  // Handle --skip flag
-  const skipIndex = args.indexOf('--skip');
-  if (skipIndex !== -1) {
-    const skipItems = [];
-    for (let i = skipIndex + 1; i < args.length; i++) {
-      if (args[i].startsWith('--')) break;
-      skipItems.push(args[i]);
-    }
-
-    if (!validateGlobals(skipItems)) {
-      console.error('❌ Invalid globals provided. Globals must be valid JavaScript identifiers.');
-      console.error('Example: npx chainsafe src/ --skip axios lodash moment');
-      process.exit(1);
-    }
-    console.log('Adding additional globals to skip:', skipItems.join(', '));
-    skipItems.forEach(global => builtInGlobals.add(global));
-  }
-
-  console.log('\n🚀 Starting optional chaining transformation');
-  console.log('==========================================');
+  const options = {
+    preview: args.includes('--preview'),
+    fileType
+  };
 
   try {
-    const stats = fs.statSync(inputPath);
+    const stats = await fs.stat(inputPath);
+    console.log('\n🚀 Starting transformation...');
 
     if (stats.isDirectory()) {
-      processDirectory(inputPath, fileType);
-      console.log('\n✨ Successfully processed all files!');
+      await processDirectory(inputPath, options, state);
     } else {
-      if (isValidFileType(inputPath, fileType)) {
-        console.log(`\n📄 Processing single file: ${inputPath}`);
-        processFile(inputPath);
-        console.log('\n✨ Successfully processed file!');
-      } else {
-        console.error(`\n❌ File type not matched with specified type filter: ${fileType}`);
-        process.exit(1);
-      }
+      await processFile(inputPath, options, state);
     }
+
+    console.log('\n✨ Processing complete!');
+    console.log('\nStatistics:');
+    console.log(`Files processed: ${state.stats.filesProcessed}`);
+    console.log(`Files modified: ${state.stats.filesModified}`);
+    console.log(`Errors encountered: ${state.stats.errors}`);
+    console.log(`Warnings: ${state.stats.warnings}`);
+    console.log(`Total time: ${state.getExecutionTime()}s`);
   } catch (error) {
     console.error('\n❌ Error:', error.message);
+    if (error.phase) {
+      console.error('Phase:', error.phase);
+      console.error('Expression:', error.expression);
+      console.error('Location:', error.location);
+    }
+    if (error.filePath) {
+      console.error('File:', error.filePath);
+    }
     process.exit(1);
   }
 }
 
-module.exports = { addOptionalChaining, builtInGlobals };
+if (require.main === module) {
+  main().catch(error => {
+    console.error('Fatal error:', error);
+    process.exit(1);
+  });
+}
+
+module.exports = { addOptionalChaining };

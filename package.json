@@ -22,8 +22,8 @@
   "author": "Dasari Uma Mahesh (Mahesh)",
   "license": "MIT",
   "dependencies": {
-    "@babel/parser": "^7.23.0",
-    "@babel/traverse": "^7.23.0"
+    "@babel/parser": "^7.23.7",
+    "@babel/traverse": "^7.23.7"
   },
   "repository": {
     "type": "git",

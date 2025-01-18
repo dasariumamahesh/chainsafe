@@ -31,6 +31,24 @@ Options:
   --help                Show help information 
 ```
 
+## Features
+
+- ✨ Automatic optional chaining transformation
+- 🔄 Supports both TypeScript and JavaScript files
+- 🎯 Smart detection of potentially nullable expressions
+- 🛡️ Preserves existing optional chaining
+- ⚡ Fast and efficient processing
+- 🔒 Safe transformation with built-in globals protection
+- 📝 Preview mode for safe checking
+- 📁 Process single files or entire directories
+- 🚫 Skip specific globals as needed
+- 🎯 Selective application to specific modules
+- 🌐 Global application with skip-none mode
+- 🔍 Fine-grained control over transformations
+- 🔁 Multiple pass transformations for nested chains
+- 📊 Detailed statistics and error reporting
+- 🛠️ Advanced configuration options
+
 ## Examples
 
 ### Process all files in a directory
@@ -50,12 +68,12 @@ chainsafe src/ --type js
 
 ### Skip certain globals
 ```bash
-chainsafe src/ --skip axios lodash
+chainsafe src/ --skip axios,lodash
 ```
 
 ### Remove items from built-in globals list
 ```bash
-chainsafe src/ --no-skip Array Object
+chainsafe src/ --no-skip Array,Object
 ```
 
 ### Preview changes without writing
@@ -75,46 +93,31 @@ chainsafe src/ --skip-none
 
 ### Only skip specific modules
 ```bash
-chainsafe src/ --skip-only axios lodash
+chainsafe src/ --skip-only axios,lodash
 ```
 
 ### Only apply to specific modules
 ```bash
-chainsafe src/ --apply-only axios process
+chainsafe src/ --apply-only axios,process
 ```
 
-## Before and After
+## Multiple Pass Transformations
+
+The tool performs multiple passes (default: 5) to handle deeply nested chains:
 
 ### Before:
 ```javascript
-const user = getUser();
-const name = user.profile.name;
-const city = user.profile.address.city;
-const apiData = axios.get('/api').data.items;
+const data = service.getData().process().validate();
+const nested = obj.deeply.nested.property.access;
+const mixed = api.get().data.process().validate().result;
 ```
 
 ### After:
 ```javascript
-const user = getUser();
-const name = user?.profile?.name;
-const city = user?.profile?.address?.city;
-const apiData = axios?.get('/api')?.data?.items;  // With --apply-only axios
+const data = service?.getData()?.process()?.validate();
+const nested = obj?.deeply?.nested?.property?.access;
+const mixed = api?.get()?.data?.process()?.validate()?.result;
 ```
-
-## Features
-
-- ✨ Automatic optional chaining transformation
-- 🔄 Supports both TypeScript and JavaScript files
-- 🎯 Smart detection of potentially nullable expressions
-- 🛡️ Preserves existing optional chaining
-- ⚡ Fast and efficient processing
-- 🔒 Safe transformation with built-in globals protection
-- 📝 Preview mode for safe checking
-- 📁 Process single files or entire directories
-- 🚫 Skip specific globals as needed
-- 🎯 Selective application to specific modules
-- 🌐 Global application with skip-none mode
-- 🔍 Fine-grained control over transformations
 
 ## Built-in Globals
 
@@ -135,6 +138,7 @@ The following globals are protected by default and won't receive optional chaini
 - Function
 - console
 - Buffer
+- process
 
 You can:
 - Add to this list using `--skip`
@@ -145,90 +149,118 @@ You can:
 
 ## Technical Details
 
+### Parser Features
 - Uses @babel/parser for accurate TypeScript/JavaScript parsing
-- Analyzes AST (Abstract Syntax Tree) for safe transformations
+- Intelligent AST (Abstract Syntax Tree) analysis
 - Preserves source code formatting
 - Handles complex nested expressions
 - Supports .ts, .tsx, .js, and .jsx files
-- Smart module-specific transformation support
-- Configurable transformation scope
+
+### Configuration
+- Maximum file size limit (default: 10MB)
+- Configurable ignored directories
+- Customizable file extensions
+- Binary file detection and skipping
+- Multiple pass iterations for nested chains
+
+### TypeScript Support
+- Enhanced enum handling
+- Improved type reference detection
+- Optimized plugin configuration
+- Support for TypeScript-specific constructs
+- Proper handling of type assertions
 
 ## Error Handling
 
-The tool will:
-- Skip files it can't process safely
-- Report parsing errors clearly
-- Maintain original file on transformation failure
-- Skip invalid global names in --skip/--no-skip
-- Validate mutually exclusive options
-- Ensure proper argument format for all options
+The tool provides:
+- Detailed error context (phase, expression, location)
+- Clear parsing error messages
+- File processing statistics
+- Warning detection and reporting
+- Safe file transformation
+- Validation of skip/apply options
+- Original file preservation on failure
 
-## Tips
+## Statistics and Reporting
 
-1. Always use `--preview` first when processing many files
-2. Back up important files before processing
-3. Use `--skip-list` to verify current globals configuration
-4. Process one directory at a time for better control
-5. Use `--apply-only` for targeted transformations
-6. Use `--skip-none` when maximum coverage is needed
-7. Combine with `--preview` to verify transformations
+Each run provides:
+- Number of files processed
+- Number of files modified
+- Errors encountered
+- Warnings detected
+- Processing time
+- Transformation details
 
 ## Advanced Usage
 
 ### Targeted Transformations
 ```bash
-# Only transform axios and lodash chains
-chainsafe src/ --apply-only axios lodash --preview
+# Transform specific modules with preview
+chainsafe src/ --apply-only axios,lodash --preview
 
-# Transform everything except specific modules
-chainsafe src/ --skip-only axios fetch
+# Exclude specific modules
+chainsafe src/ --skip-only axios,fetch
 
-# Transform absolutely everything
+# Transform everything
 chainsafe src/ --skip-none
 ```
 
 ### Option Combinations
 ```bash
-# Preview targeted transformations
-chainsafe src/ --apply-only axios --preview
+# Preview TypeScript transformations
+chainsafe src/ --type ts --preview
 
-# Process only TypeScript files with targeted transformations
+# Target specific modules in TypeScript
 chainsafe src/ --type ts --apply-only axios
 ```
 
+## Best Practices
+
+1. Always use `--preview` first for safety
+2. Back up important files before processing
+3. Check `--skip-list` before modifications
+4. Process directories individually
+5. Use `--apply-only` for targeted changes
+6. Test with sample files first
+7. Review statistics after processing
+8. Check warnings and error messages
+
 ## Release Notes
 
-### Version 1.0.2 🚀 (October 26, 2024)
+### Version 1.0.4 🚀 (January 20, 2025)
 
 #### New Features 🎉
 
-1. **Apply-Only Mode** (`--apply-only`)
-   - Selectively apply optional chaining to specific modules
-   - Target transformations to particular packages
-   ```bash
-   chainsafe src/ --apply-only axios lodash
-   ```
+1. **Multiple Pass Transformations**
+   - Support for deeply nested chains
+   - Configurable iteration count
+   - Improved nested property handling
 
-2. **Skip-None Mode** (`--skip-none`)
-   - Bypass built-in globals protection
-   - Apply optional chaining universally
-   ```bash
-   chainsafe src/ --skip-none
-   ```
+2. **Enhanced Configuration**
+   - File size limits
+   - Directory exclusions
+   - Binary file handling
+   - Customizable extensions
 
-3. **Skip-Only Mode** (`--skip-only`)
-   - Custom control over skipped modules
-   - Replace default built-in globals list
-   ```bash
-   chainsafe src/ --skip-only axios fetch
-   ```
+3. **Improved Error Handling**
+   - Detailed error context
+   - Better error messages
+   - Warning detection
+   - Statistics tracking
+
+4. **TypeScript Improvements**
+   - Better enum handling
+   - Enhanced type support
+   - Optimized plugins
 
 #### Improvements 🔨
 
-- Enhanced module-specific transformation logic
-- Better handling of nested member expressions
-- Improved validation for mutually exclusive options
-- Clearer error messages for invalid configurations
+- Optimized AST traversal
+- Better skip logic
+- Improved performance
+- Enhanced error reporting
+- Better TypeScript support
+- Clearer documentation
 
 #### Breaking Changes ⚠️
 
@@ -236,8 +268,9 @@ None. All new features are backward compatible.
 
 #### Known Issues 🚧
 
-- Multiple chained operations might require multiple passes
-- Computed property access with `--apply-only` may need review
+- Complex computed properties might need review
+- Some edge cases in TypeScript type assertions
+- Very large files might need multiple runs
 
 #### Installation & Upgrade
 
