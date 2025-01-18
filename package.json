@@ -1,6 +1,6 @@
 {
   "name": "chainsafe",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "A CLI tool to automatically add optional chaining to TypeScript and JavaScript files",
   "main": "index.js",
   "bin": {
